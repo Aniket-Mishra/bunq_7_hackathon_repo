@@ -51,7 +51,7 @@
     border: 1px solid #26262e;
     border-radius: 12px;
     padding: 20px;
-    min-height: 120px;
+    min-height: 80px;
     font-size: 15px;
     line-height: 1.6;
     white-space: pre-wrap;
@@ -68,25 +68,50 @@
   }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* Decision badge */
-  .decision-row {
+  /* Tool call panel */
+  .tool-panel { margin-top: 14px; }
+  .tool-row {
     display: flex;
-    gap: 12px;
     align-items: center;
-    margin-top: 16px;
-    flex-wrap: wrap;
+    gap: 12px;
+    padding: 10px 14px;
+    background: #0d0d12;
+    border: 1px solid #26262e;
+    border-radius: 8px;
+    margin-top: 8px;
+    font-size: 13px;
   }
-  .badge {
-    padding: 6px 12px;
-    border-radius: 20px;
+  .tool-row .tool-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+  .tool-row.pending .tool-icon {
+    border: 2px solid #26262e;
+    border-top-color: #5b8cff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .tool-row.done .tool-icon {
+    background: #6fde9b;
+    border-radius: 50%;
+  }
+  .tool-row.error .tool-icon {
+    background: #ff7b7b;
+    border-radius: 50%;
+  }
+  .tool-name { color: #c8c8d0; font-weight: 500; flex: 1; }
+  .tool-result {
+    color: #8a8a92;
     font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
+    font-family: "SF Mono", monospace;
+    text-align: right;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .risk-high { background: #3a1414; color: #ff7b7b; }
-  .risk-medium { background: #3a2a14; color: #ffb878; }
-  .risk-low { background: #14331f; color: #6fde9b; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* Bunq card visual */
   .bunq-card {
@@ -133,15 +158,24 @@
   .btn-primary:disabled { background: #2a2a32; color: #5a5a62; cursor: not-allowed; }
   .btn-secondary { background: #26262e; color: #e8e8ed; }
   .btn-secondary:hover { background: #30303a; }
-  
+
   /* hint buttons */
   .hint-btn { width: auto; margin-top: 0; padding: 8px 12px; font-size: 13px; }
   .hint-btn.active { background: #5b8cff; color: white; }
 
   .hidden { display: none; }
 
-  .meta-row { color: #8a8a92; font-size: 13px; margin-top: 8px; }
   .reason { color: #c8c8d0; font-size: 14px; margin-top: 12px; line-height: 1.5; }
+  .default-card-notice {
+    background: #1c2a1c;
+    color: #b8e6b8;
+    border: 1px solid #2c4a2c;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
   .error { color: #ff7b7b; padding: 12px; background: #3a1414; border-radius: 8px; margin-top: 12px; }
 </style>
 </head>
@@ -151,15 +185,7 @@
   <h1>ShieldPay</h1>
   <p class="subtitle">AI payment protection. Powered by Claude and bunq.</p>
 
-  <!-- Upload state, commented out part does not give how to treat for demo -->
-  <!-- <div id="upload-state" class="card">
-    <div class="drop-zone" id="drop-zone">
-      <div class="drop-zone-strong">Drop a checkout screenshot here</div>
-      <div class="drop-zone-text">or click to upload (receipt, bill, subscription page)</div>
-      <input type="file" id="file-input" accept="image/*">
-    </div>
-  </div> -->
-
+  <!-- Upload state -->
   <div id="upload-state" class="card">
     <div class="drop-zone" id="drop-zone">
       <div class="drop-zone-strong">Drop a checkout screenshot here</div>
@@ -180,7 +206,7 @@
   <div id="analyze-state" class="card hidden">
     <div class="card-label" style="color:#8a8a92; margin-bottom: 12px;">CLAUDE IS THINKING</div>
     <div class="stream-box pulse" id="stream-output"></div>
-    <div class="decision-row hidden" id="decision-row"></div>
+    <div class="tool-panel" id="tool-panel"></div>
   </div>
 
   <!-- Result state -->
@@ -200,12 +226,17 @@
           <strong id="card-expiry">-</strong>
         </div>
         <div>
+          CVV
+          <strong>***</strong>
+        </div>
+        <div>
           LIMIT
           <strong id="card-limit">-</strong>
         </div>
       </div>
     </div>
     <div class="card">
+      <div id="default-card-notice" class="default-card-notice hidden"></div>
       <div class="reason" id="result-reason"></div>
       <button class="btn-primary" id="pay-button">Simulate payment & cancel card</button>
       <button class="btn-secondary" id="reset-button">Start over</button>
@@ -216,10 +247,15 @@
 </div>
 
 <script>
-const API = "";  // same origin
+const API = "";
 
-// Only for hint:
 let selectedHint = "";
+let currentCardId = null;
+
+// Agent state captured during the SSE stream.
+let agentCardData = null;
+let agentFinalMessage = null;
+let agentFinalRisk = null;
 
 const els = {
   uploadState: document.getElementById("upload-state"),
@@ -228,7 +264,7 @@ const els = {
   dropZone: document.getElementById("drop-zone"),
   fileInput: document.getElementById("file-input"),
   streamOutput: document.getElementById("stream-output"),
-  decisionRow: document.getElementById("decision-row"),
+  toolPanel: document.getElementById("tool-panel"),
   resultCard: document.getElementById("result-card"),
   cardLabel: document.getElementById("card-label"),
   cardNumber: document.getElementById("card-number"),
@@ -236,13 +272,11 @@ const els = {
   cardExpiry: document.getElementById("card-expiry"),
   cardLimit: document.getElementById("card-limit"),
   resultReason: document.getElementById("result-reason"),
+  defaultCardNotice: document.getElementById("default-card-notice"),
   payButton: document.getElementById("pay-button"),
   resetButton: document.getElementById("reset-button"),
   errorBox: document.getElementById("error-box"),
 };
-
-let currentDecision = null;
-let currentCardId = null;
 
 // ---- File handling ----
 els.dropZone.addEventListener("click", () => els.fileInput.click());
@@ -262,24 +296,6 @@ els.dropZone.addEventListener("drop", (e) => {
   if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 });
 
-// Without hint buttons
-// async function handleFile(file) {
-//  showAnalyzeState();
-//  const formData = new FormData();
-//  formData.append("file", file);
-
-//  try {
-//    const response = await fetch(API + "/analyze-image-upload", {
-//      method: "POST",
-//      body: formData,
-//    });
-//    await readSSEStream(response);
-//  } catch (err) {
-//    showError(err.message);
-//  }
-//}
-
-// This is for hint buttoins
 async function handleFile(file) {
   showAnalyzeState();
   const formData = new FormData();
@@ -316,87 +332,123 @@ async function readSSEStream(response) {
       if (!line.startsWith("data: ")) continue;
       const event = JSON.parse(line.slice(6));
 
-      /* old version, kept for reference
       if (event.type === "text") {
         analysisText += event.content;
         els.streamOutput.textContent = analysisText;
-      */
-      if (event.type === "text") {
-        analysisText += event.content;
-        const visible = analysisText.split("DECISION_JSON:")[0].trim();
-        els.streamOutput.textContent = visible;
-      } else if (event.type === "decision") {
-        currentDecision = event.content;
-        renderDecision(currentDecision);
+      } else if (event.type === "tool_start") {
+        addToolRow(event.id, event.name);
+      } else if (event.type === "tool_result") {
+        completeToolRow(event.id, event.name, event.result);
+        captureAgentState(event.name, event.result);
       } else if (event.type === "error") {
         showError(event.content);
       } else if (event.type === "done") {
         els.streamOutput.classList.remove("pulse");
-        await handleDecision(currentDecision);
+        await finalize();
       }
     }
   }
 }
 
-// ---- Decision handling ----
-function renderDecision(decision) {
-  els.decisionRow.classList.remove("hidden");
-  els.decisionRow.innerHTML = `
-    <span class="badge risk-${decision.risk}">${decision.risk} risk</span>
-    <span style="color:#8a8a92; font-size: 14px;">${decision.action.replace("_", " ")}</span>
-  `;
+// ---- Tool panel ----
+const TOOL_LABELS = {
+  extract_checkout_details: "Reading checkout image",
+  lookup_merchant_reputation: "Checking merchant reputation",
+  get_user_recent_transactions: "Reviewing transaction history",
+  create_shield_card: "Creating shield card",
+  notify_user: "Finalizing recommendation",
+};
+
+function addToolRow(id, name) {
+  const row = document.createElement("div");
+  row.id = "tool-" + id;
+  row.className = "tool-row pending";
+  row.innerHTML =
+    '<span class="tool-icon"></span>' +
+    '<span class="tool-name">' + (TOOL_LABELS[name] || name) + '</span>' +
+    '<span class="tool-result">running...</span>';
+  els.toolPanel.appendChild(row);
 }
 
-async function handleDecision(decision) {
-  if (!decision) return;
+function completeToolRow(id, name, result) {
+  const row = document.getElementById("tool-" + id);
+  if (!row) return;
+  const isError = result && result.error;
+  row.className = "tool-row " + (isError ? "error" : "done");
+  row.querySelector(".tool-result").textContent = summarizeResult(name, result);
+}
 
-  if (decision.action === "no_action") {
+function summarizeResult(name, result) {
+  if (!result) return "ok";
+  if (result.error) return "error";
+  if (name === "extract_checkout_details") {
+    return (result.merchant || "?") + " - " + (result.currency || "") + " " + (result.amount || 0);
+  }
+  if (name === "lookup_merchant_reputation") return result.reputation || "ok";
+  if (name === "get_user_recent_transactions") return result.paid_before ? "paid before" : "no history";
+  if (name === "create_shield_card") return result.created ? result.masked_number : "skipped";
+  if (name === "notify_user") return (result.risk || "") + " risk";
+  return "ok";
+}
+
+function captureAgentState(name, result) {
+  if (name === "create_shield_card" && result && result.created) {
+    agentCardData = result;
+  } else if (name === "notify_user" && result) {
+    agentFinalMessage = result.message;
+    agentFinalRisk = result.risk;
+  }
+}
+
+// ---- Result rendering ----
+async function finalize() {
+  if (agentCardData) {
+    currentCardId = agentCardData.card_id;
     showResult({
-      label: "MAIN CARD",
-      cardClass: "shield",
-      number: "**** **** **** 1553",
-      holder: "Kiley Hammond",
-      expiry: "12/29",
-      limit: "Default",
-      reason: decision.reason,
-      noCancel: true,
+      label: agentCardData.second_line || "SHIELD CARD",
+      cardClass: agentCardData.scenario === "free_trial" ? "trial" : "shield",
+      number: agentCardData.masked_number,
+      holder: agentCardData.name_on_card || "-",
+      expiry: formatExpiry(agentCardData.expiry_date),
+      limit: "EUR " + agentCardData.limit,
+      reason: agentFinalMessage || "Shield card created.",
+      noCancel: false,
     });
     return;
   }
 
-  // Need to create a card
+  const defaultCard = await fetchDefaultCard();
+  if (!defaultCard) return;
+
+  showResult({
+    label: defaultCard.second_line || "MAIN CARD",
+    cardClass: "shield",
+    number: defaultCard.masked_number,
+    holder: defaultCard.name_on_card || "-",
+    expiry: formatExpiry(defaultCard.expiry_date),
+    limit: "Default",
+    reason: agentFinalMessage || "Trusted merchant. No protection needed.",
+    noCancel: true,
+  });
+
+  if (defaultCard.created_now) {
+    els.defaultCardNotice.textContent =
+      "No default virtual card found on your bunq account. We just created one for you.";
+    els.defaultCardNotice.classList.remove("hidden");
+  }
+}
+
+async function fetchDefaultCard() {
   try {
-    const scenario = decision.card_type === "trial_shield" ? "free_trial" : "unknown_merchant";
-    const createResp = await fetch(API + "/create-card", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        scenario: scenario,
-        amount: decision.limit || 0.01,
-        limit: decision.limit || 0.01,
-        expiry_days: decision.expiry_days,
-      }),
-    });
-    if (!createResp.ok) throw new Error("Create card failed: " + await createResp.text());
-    const created = await createResp.json();
-    currentCardId = created.card_id;
-
-    // Fetch real card details
-    const detailsResp = await fetch(API + "/get-card/" + created.card_id);
-    const details = await detailsResp.json();
-
-    showResult({
-      label: details.second_line || "SHIELD CARD",
-      cardClass: scenario === "free_trial" ? "trial" : "shield",
-      number: created.masked_number,
-      holder: details.name_on_card,
-      expiry: formatExpiry(details.expiry_date),
-      limit: "EUR " + details.limit_value,
-      reason: decision.reason,
-      noCancel: false,
-    });
+    const resp = await fetch(API + "/default-card");
+    if (!resp.ok) {
+      showError("Could not load default card: " + (await resp.text()));
+      return null;
+    }
+    return await resp.json();
   } catch (err) {
-    showError(err.message);
+    showError("Default card request failed: " + err.message);
+    return null;
   }
 }
 
@@ -414,8 +466,13 @@ function showAnalyzeState() {
   els.analyzeState.classList.remove("hidden");
   els.streamOutput.textContent = "";
   els.streamOutput.classList.add("pulse");
-  els.decisionRow.classList.add("hidden");
-  els.decisionRow.innerHTML = "";
+  els.toolPanel.innerHTML = "";
+  els.defaultCardNotice.classList.add("hidden");
+  els.defaultCardNotice.textContent = "";
+
+  agentCardData = null;
+  agentFinalMessage = null;
+  agentFinalRisk = null;
 }
 
 function showResult({ label, cardClass, number, holder, expiry, limit, reason, noCancel }) {
@@ -464,7 +521,6 @@ els.payButton.addEventListener("click", async () => {
 });
 
 els.resetButton.addEventListener("click", () => {
-  currentDecision = null;
   currentCardId = null;
   els.uploadState.classList.remove("hidden");
   els.analyzeState.classList.add("hidden");
@@ -475,7 +531,7 @@ els.resetButton.addEventListener("click", () => {
   els.payButton.textContent = "Simulate payment & cancel card";
 });
 
-// Hint button handling
+// Hint buttons
 document.querySelectorAll(".hint-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".hint-btn").forEach(b => b.classList.remove("active"));
@@ -483,9 +539,7 @@ document.querySelectorAll(".hint-btn").forEach(btn => {
     selectedHint = btn.dataset.hint;
   });
 });
-// Default to "Auto detect"
 document.querySelector(".hint-btn[data-hint='']").classList.add("active");
-
 </script>
 
 </body>

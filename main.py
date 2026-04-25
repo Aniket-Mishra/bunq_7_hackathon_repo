@@ -1,12 +1,16 @@
 """
-ShieldPay — FastAPI Backend
+ShieldPay - FastAPI Backend (agentic version)
 Run from project root: uvicorn main:app --reload --port 8000
 
 Endpoints:
-  POST /analyze      — Claude analyses checkout, returns risk decision (streaming)
-  POST /create-card  — Creates a bunq virtual card based on Claude's decision
-  POST /cancel-card  — Cancels a bunq card (called after "payment")
-  GET  /health       — Sanity check
+  POST /analyze              - Claude analyses a text checkout, streaming (legacy)
+  POST /analyze-image-upload - Agentic image analysis with tool use (NEW)
+  POST /create-card          - Direct bunq card creation (still available)
+  POST /cancel-card          - Cancels a bunq card (called by the pay button)
+  GET  /get-card/{card_id}   - Fetch real card details from bunq
+  GET  /default-card         - Get-or-create the user's default virtual card
+  GET  /allowed-card-names   - bunq permitted card names
+  GET  /health               - Sanity check
 """
 
 import os
@@ -27,16 +31,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Config 
+# Config
 BUNQ_API_URL         = os.getenv("BUNQ_API_URL", "https://public-api.sandbox.bunq.com/v1")
 SESSION_TOKEN        = os.getenv("SESSION_TOKEN")
 USER_ID              = os.getenv("USER_ID")
 MONETARY_ACCOUNT_ID  = os.getenv("MONETARY_ACCOUNT_ID")
 KEY_PATH             = os.getenv("BUNQ_INSTALLATION_KEY_PATH", "./bunq-user-1/installation.key")
 ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY")
-CARD_NAME            = os.getenv("CARD_NAME", "Card Holder")  # must match sandbox user name
+CARD_NAME            = os.getenv("CARD_NAME", "Card Holder")
 
-# Startup validation 
+# Startup validation
 missing = [k for k, v in {
     "SESSION_TOKEN": SESSION_TOKEN,
     "USER_ID": USER_ID,
@@ -46,7 +50,7 @@ missing = [k for k, v in {
 if missing:
     raise RuntimeError(f"Missing .env variables: {', '.join(missing)}")
 
-# RSA signing ─
+# RSA signing
 with open(KEY_PATH, "rb") as f:
     _private_key = serialization.load_pem_private_key(f.read(), password=None)
 
@@ -68,42 +72,487 @@ def bunq_headers(body_str: str = "") -> dict:
         base["X-Bunq-Client-Signature"] = _sign(body_str)
     return base
 
-# Anthropic client 
+# Anthropic client
 ai = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+MODEL = "claude-sonnet-4-6"
 
-# FastAPI app ─
+# FastAPI app
 app = FastAPI(title="ShieldPay API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Request / Response models ─
+# Request models
 class CheckoutContext(BaseModel):
-    merchant_name: str        # e.g. "Netflix", "gadgets4u.nl", "Amazon"
-    scenario: str             # "free_trial" | "unknown_merchant" | "trusted_merchant"
-    amount: float             # purchase amount in EUR
-    description: str          # human-readable context, e.g. "30-day free trial subscription"
+    merchant_name: str
+    scenario: str
+    amount: float
+    description: str
 
 class CreateCardRequest(BaseModel):
     scenario: str
     amount: float
     limit: float
-    expiry_days: int | None = None   # None = no special expiry logic
+    expiry_days: int | None = None
 
 class CancelCardRequest(BaseModel):
     card_id: int
 
-class CheckoutImageContext(BaseModel):
-    image_base64: str         # base64-encoded image, no data URI prefix
-    media_type: str = "image/jpeg"   # "image/jpeg" | "image/png" | "image/webp" | "image/gif"
-    hint: str | None = None   # optional user note, e.g. "this is a subscription signup"
+# ---------- Tool implementations ----------
 
-# SYSTEM PROMPT for Claude 
-SYSTEM_PROMPT = """You are ShieldPay, an AI payment protection agent. 
+EXTRACT_SYSTEM = """You extract checkout details from a screenshot.
+Return ONLY a JSON object, no prose, no markdown:
+{
+  "merchant": "<name>",
+  "amount": <number>,
+  "currency": "<3-letter code>",
+  "summary": "<one short sentence describing what is being purchased>",
+  "is_subscription_signup": <true|false>
+}
+If the image is unreadable, set merchant to "unknown" and amount to 0."""
+
+
+def tool_extract_checkout_details(image_b64: str, media_type: str) -> dict:
+    """Runs a dedicated vision call to pull structured checkout data."""
+    resp = ai.messages.create(
+        model=MODEL,
+        max_tokens=400,
+        system=EXTRACT_SYSTEM,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": media_type, "data": image_b64
+                }},
+                {"type": "text", "text": "Extract the checkout details."}
+            ]
+        }]
+    )
+    text = resp.content[0].text.strip()
+    return _safe_json_parse(text, fallback={
+        "merchant": "unknown", "amount": 0, "currency": "EUR",
+        "summary": "Could not read image", "is_subscription_signup": False
+    })
+
+
+def _safe_json_parse(text: str, fallback):
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start == -1 or end <= start:
+        return fallback
+    try:
+        return json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return fallback
+
+
+TRUSTED_MERCHANTS = {
+    "netflix", "spotify", "amazon", "apple", "google", "microsoft",
+    "uber", "bol.com", "albert heijn", "hema", "ikea", "zalando", "asos"
+}
+SUSPICIOUS_KEYWORDS = {
+    "gadgets4u", "deals4less", "freeshippingnow", "buynowcheap"
+}
+
+
+def tool_lookup_merchant_reputation(merchant_name: str) -> dict:
+    n = (merchant_name or "").lower()
+    for t in TRUSTED_MERCHANTS:
+        if t in n:
+            return {"merchant": merchant_name, "reputation": "trusted",
+                    "note": "Well known reputable merchant."}
+    for s in SUSPICIOUS_KEYWORDS:
+        if s in n:
+            return {"merchant": merchant_name, "reputation": "suspicious",
+                    "note": "Matches patterns associated with risky merchants."}
+    return {"merchant": merchant_name, "reputation": "unknown",
+            "note": "Not in our trusted or suspicious list. Treat with caution."}
+
+
+# Mock transaction history. In production this would hit bunq's payment API.
+MOCK_TRANSACTIONS = [
+    {"merchant": "Netflix",      "amount": 15.99, "date": "2025-09-15"},
+    {"merchant": "Albert Heijn", "amount": 42.30, "date": "2025-09-10"},
+    {"merchant": "Spotify",      "amount": 10.99, "date": "2025-08-28"},
+    {"merchant": "Bol.com",      "amount": 67.50, "date": "2025-08-22"},
+]
+
+
+def tool_get_user_recent_transactions(merchant_name: str = "") -> dict:
+    if not merchant_name:
+        return {"recent_transactions": MOCK_TRANSACTIONS}
+    n = merchant_name.lower()
+    matches = [t for t in MOCK_TRANSACTIONS
+               if n in t["merchant"].lower() or t["merchant"].lower() in n]
+    return {
+        "merchant_searched": merchant_name,
+        "paid_before": len(matches) > 0,
+        "matches": matches,
+    }
+
+
+def tool_create_shield_card(scenario: str, limit: float,
+                            expiry_days: int | None = None) -> dict:
+    if scenario == "trusted_merchant":
+        return {"created": False, "reason": "Trusted merchant. No card needed."}
+    return _create_bunq_card(scenario, limit, expiry_days)
+
+
+def tool_notify_user(message: str, risk: str) -> dict:
+    return {"message": message, "risk": risk}
+
+
+DEFAULT_CARD_TAG = "MAIN CARD"
+DEFAULT_CARD_LIMIT = 5000.0
+_default_card_cache: dict | None = None
+
+
+def _create_bunq_card(scenario: str, limit: float,
+                      expiry_days: int | None = None) -> dict:
+    """Creates a bunq virtual shield card and applies a spending limit."""
+    labels = {
+        "free_trial":       "TRIAL SHIELD",
+        "unknown_merchant": "ONE-TIME CARD",
+        "trusted_merchant": "SHIELD CARD",
+    }
+    second_line = labels.get(scenario, "SHIELD CARD")
+
+    card_id, card_data, error = _post_card_to_bunq(second_line, limit)
+    if error:
+        return {"created": False, "error": error}
+
+    if expiry_days:
+        display_expiry = (datetime.utcnow() + timedelta(days=expiry_days)).strftime("%Y-%m-%d")
+    else:
+        display_expiry = card_data.get("expiry_date", "2030-05-31")
+
+    return {
+        "created": True,
+        "card_id": card_id,
+        "second_line": second_line,
+        "name_on_card": CARD_NAME,
+        "limit": limit,
+        "currency": "EUR",
+        "scenario": scenario,
+        "expiry_date": display_expiry,
+        "status": "ACTIVE",
+        "masked_number": f"**** **** **** {str(card_id)[-4:].zfill(4)}",
+    }
+
+
+def _post_card_to_bunq(second_line: str, limit: float):
+    """POSTs a card and PUTs its limit. Returns (card_id, card_data, error)."""
+    card_body = {
+        "second_line": second_line,
+        "name_on_card": CARD_NAME,
+        "type": "MASTERCARD",
+        "product_type": "MASTERCARD_DEBIT",
+        "pin_code_assignment": [{
+            "type": "PRIMARY",
+            "pin_code": os.getenv("CARD_PIN", "1234"),
+            "monetary_account_id": int(MONETARY_ACCOUNT_ID),
+        }],
+    }
+    body_str = json.dumps(card_body)
+    url = f"{BUNQ_API_URL}/user/{USER_ID}/card-debit"
+    resp = requests.post(url, headers=bunq_headers(body_str), data=body_str)
+    if resp.status_code not in (200, 201):
+        return None, {}, f"bunq error: {resp.text}"
+
+    card_id, card_data = _parse_card_id(resp.json())
+    if not card_id:
+        return None, {}, "Could not parse card ID from bunq"
+
+    limit_body = json.dumps({
+        "card_limit": {"value": f"{limit:.2f}", "currency": "EUR"},
+        "status": "ACTIVE",
+    })
+    put_url = f"{BUNQ_API_URL}/user/{USER_ID}/card/{card_id}"
+    limit_resp = requests.put(put_url, headers=bunq_headers(limit_body), data=limit_body)
+    if limit_resp.status_code != 200:
+        return None, {}, f"bunq limit error: {limit_resp.text}"
+
+    return card_id, card_data, None
+
+
+def _parse_card_id(bunq_response: dict):
+    response_list = bunq_response.get("Response", [])
+    for item in response_list:
+        if "CardDebit" in item:
+            data = item["CardDebit"]
+            return data.get("id"), data
+        if "Id" in item:
+            return item["Id"]["id"], {}
+    return None, {}
+
+
+# ---------- Default card (get-or-create) ----------
+
+def _list_user_cards() -> list[dict]:
+    """Lists all cards on the bunq user account."""
+    url = f"{BUNQ_API_URL}/user/{USER_ID}/card?count=200"
+    resp = requests.get(url, headers=bunq_headers())
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"bunq list error: {resp.text}")
+    cards = []
+    for item in resp.json().get("Response", []):
+        for key in ("CardDebit", "Card", "CardCredit"):
+            if key in item:
+                cards.append(item[key])
+                break
+    return cards
+
+
+def _to_default_card_record(bunq_card: dict) -> dict:
+    card_id = bunq_card.get("id")
+    return {
+        "card_id": card_id,
+        "second_line": bunq_card.get("second_line") or DEFAULT_CARD_TAG,
+        "name_on_card": bunq_card.get("name_on_card") or CARD_NAME,
+        "masked_number": f"**** **** **** {str(card_id)[-4:].zfill(4)}",
+        "expiry_date": bunq_card.get("expiry_date", "2030-05-31"),
+        "status": bunq_card.get("status", "ACTIVE"),
+    }
+
+
+def _get_or_create_default_card() -> dict:
+    """Returns the default virtual card. Creates one if missing.
+
+    Sets created_now=True only on the request that actually performed the
+    creation. Subsequent requests in the same process hit a cache and report
+    created_now=False.
+    """
+    global _default_card_cache
+    if _default_card_cache:
+        return {**_default_card_cache, "created_now": False}
+
+    for card in _list_user_cards():
+        if (card.get("second_line") == DEFAULT_CARD_TAG
+                and card.get("status") == "ACTIVE"):
+            record = _to_default_card_record(card)
+            _default_card_cache = record
+            return {**record, "created_now": False}
+
+    card_id, card_data, error = _post_card_to_bunq(DEFAULT_CARD_TAG, DEFAULT_CARD_LIMIT)
+    if error:
+        raise HTTPException(status_code=502, detail=error)
+    record = {
+        "card_id": card_id,
+        "second_line": DEFAULT_CARD_TAG,
+        "name_on_card": CARD_NAME,
+        "masked_number": f"**** **** **** {str(card_id)[-4:].zfill(4)}",
+        "expiry_date": card_data.get("expiry_date", "2030-05-31"),
+        "status": "ACTIVE",
+    }
+    _default_card_cache = record
+    return {**record, "created_now": True}
+
+
+# ---------- Agent loop ----------
+
+AGENT_TOOLS = [
+    {
+        "name": "extract_checkout_details",
+        "description": (
+            "Read the checkout screenshot the user just uploaded. "
+            "Returns merchant, amount, currency, summary, is_subscription_signup. "
+            "Always call this first."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "lookup_merchant_reputation",
+        "description": "Look up whether a merchant is trusted, suspicious, or unknown.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"merchant_name": {"type": "string"}},
+            "required": ["merchant_name"],
+        },
+    },
+    {
+        "name": "get_user_recent_transactions",
+        "description": (
+            "Check whether the user has paid this merchant before. "
+            "Use this when reputation is unknown to gain extra signal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"merchant_name": {"type": "string"}},
+            "required": ["merchant_name"],
+        },
+    },
+    {
+        "name": "create_shield_card",
+        "description": (
+            "Create a virtual bunq card. "
+            "Use scenario='free_trial' with limit=0.01 and expiry_days=29 for trials that auto-charge later. "
+            "Use scenario='unknown_merchant' with limit set to the exact purchase amount for risky merchants. "
+            "Do NOT call this for trusted merchants; skip straight to notify_user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scenario": {"type": "string",
+                             "enum": ["free_trial", "unknown_merchant"]},
+                "limit": {"type": "number"},
+                "expiry_days": {"type": ["integer", "null"]},
+            },
+            "required": ["scenario", "limit"],
+        },
+    },
+    {
+        "name": "notify_user",
+        "description": (
+            "Send the final 1-2 sentence explanation to the user. "
+            "Always call this LAST. risk must be high, medium, or low."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"},
+                "risk": {"type": "string", "enum": ["high", "medium", "low"]},
+            },
+            "required": ["message", "risk"],
+        },
+    },
+]
+
+AGENT_SYSTEM = """You are ShieldPay, an AI payment protection agent.
+
+A user just uploaded a checkout screenshot. Decide the safest way to pay using your tools.
+
+Workflow:
+1. Call extract_checkout_details first.
+2. Call lookup_merchant_reputation with the merchant name.
+3. If reputation is "unknown", call get_user_recent_transactions for extra signal.
+4. Decide a strategy:
+   - Free trial signup that will auto-charge later: create_shield_card with scenario="free_trial", limit=0.01, expiry_days=29.
+   - Unknown or suspicious merchant: create_shield_card with scenario="unknown_merchant", limit equal to the exact purchase amount.
+   - Trusted merchant with reasonable amount: skip card creation entirely.
+5. ALWAYS finish by calling notify_user with a 1-2 sentence reason and a risk level (high, medium, low).
+
+Speak briefly between tool calls so the user can follow your reasoning. Be decisive."""
+
+
+def _serialize_assistant(content) -> list:
+    """Convert SDK content blocks back into dict form for the next API call."""
+    out = []
+    for b in content:
+        if b.type == "text":
+            out.append({"type": "text", "text": b.text})
+        elif b.type == "tool_use":
+            out.append({"type": "tool_use", "id": b.id,
+                        "name": b.name, "input": b.input})
+    return out
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _run_tool(name: str, inp: dict, image_b64: str, media_type: str) -> dict:
+    if name == "extract_checkout_details":
+        return tool_extract_checkout_details(image_b64, media_type)
+    if name == "lookup_merchant_reputation":
+        return tool_lookup_merchant_reputation(inp["merchant_name"])
+    if name == "get_user_recent_transactions":
+        return tool_get_user_recent_transactions(inp.get("merchant_name", ""))
+    if name == "create_shield_card":
+        return tool_create_shield_card(
+            inp["scenario"], inp["limit"], inp.get("expiry_days")
+        )
+    if name == "notify_user":
+        return tool_notify_user(inp["message"], inp["risk"])
+    return {"error": f"Unknown tool: {name}"}
+
+
+def run_shieldpay_agent(image_b64: str, media_type: str, hint):
+    """Runs the agentic loop and yields SSE events for the frontend."""
+    user_msg = (
+        "The user has uploaded a checkout screenshot. "
+        f"User hint: {hint or 'none'}. "
+        "Use your tools to analyze and protect this payment."
+    )
+    messages = [{"role": "user", "content": user_msg}]
+
+    max_turns = 8
+    for _ in range(max_turns):
+        try:
+            with ai.messages.stream(
+                model=MODEL,
+                max_tokens=1024,
+                system=AGENT_SYSTEM,
+                tools=AGENT_TOOLS,
+                messages=messages,
+            ) as stream:
+                for event in stream:
+                    et = getattr(event, "type", None)
+                    if et == "content_block_start":
+                        block = event.content_block
+                        if block.type == "tool_use":
+                            yield _sse({"type": "tool_start",
+                                        "id": block.id, "name": block.name})
+                    elif et == "content_block_delta":
+                        delta = event.delta
+                        if getattr(delta, "type", None) == "text_delta":
+                            yield _sse({"type": "text", "content": delta.text})
+
+                final = stream.get_final_message()
+        except Exception as e:
+            yield _sse({"type": "error", "content": str(e)})
+            return
+
+        if final.stop_reason != "tool_use":
+            yield _sse({"type": "done"})
+            return
+
+        tool_results = []
+        for block in final.content:
+            if block.type != "tool_use":
+                continue
+            try:
+                result = _run_tool(block.name, block.input, image_b64, media_type)
+            except Exception as e:
+                result = {"error": str(e)}
+
+            yield _sse({
+                "type": "tool_result",
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+                "result": result,
+            })
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps(result),
+            })
+
+        messages.append({"role": "assistant",
+                         "content": _serialize_assistant(final.content)})
+        messages.append({"role": "user", "content": tool_results})
+
+    yield _sse({"type": "error", "content": "Agent loop exceeded max turns"})
+
+
+# ---------- Endpoints ----------
+
+@app.get("/")
+def root():
+    return {"status": "ShieldPay API running", "docs": "/docs", "health": "/health"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+# Legacy text-only analyze (unchanged contract, kept for backwards compat)
+SYSTEM_PROMPT = """You are ShieldPay, an AI payment protection agent.
 Your job is to analyse online checkout situations and decide the safest way to pay.
 
 You will receive a checkout context and must respond with:
@@ -113,12 +562,12 @@ You will receive a checkout context and must respond with:
 Scenarios you handle:
 - free_trial: Merchant is offering a free trial that auto-charges later
 - unknown_merchant: Merchant is unfamiliar or untrusted
-- trusted_merchant: Well-known, reputable merchant with small purchase
+- trusted_merchant: Well-known reputable merchant with small purchase
 
 Your decisions:
-- free_trial → create a virtual card with €0.01 limit (can't be charged after trial)
-- unknown_merchant → create a one-time virtual card capped at exact purchase amount
-- trusted_merchant → no card needed, payment is safe
+- free_trial -> create a virtual card with EUR 0.01 limit
+- unknown_merchant -> create a one-time virtual card capped at exact purchase amount
+- trusted_merchant -> no card needed
 
 After your analysis, output EXACTLY this JSON block (no markdown fences):
 DECISION_JSON:
@@ -131,42 +580,38 @@ DECISION_JSON:
   "reason": "<one sentence summary>"
 }
 
-Be concise, confident, and slightly dramatic — you are protecting someone's money in real time."""
+Be concise and confident."""
 
-IMAGE_SYSTEM_PROMPT = SYSTEM_PROMPT + """
 
-When analysing an image:
-- First identify the merchant name and total amount from the image.
-- Infer the scenario yourself: free_trial, unknown_merchant, or trusted_merchant.
-- If the image is unreadable or not a bill/receipt, set risk to "low", action to "no_action", and explain in the reason field.
-- Include the extracted merchant and amount in your spoken analysis so the user can verify."""
+def _fallback_decision(scenario: str, amount: float) -> dict:
+    if scenario == "free_trial":
+        return {"risk": "high", "action": "create_card", "card_type": "trial_shield",
+                "limit": 0.01, "expiry_days": 29,
+                "reason": "Free trial detected, shield card created."}
+    if scenario == "unknown_merchant":
+        return {"risk": "medium", "action": "create_card", "card_type": "one_time",
+                "limit": amount, "expiry_days": None,
+                "reason": "Unknown merchant, one-time card created."}
+    return {"risk": "low", "action": "no_action", "card_type": None,
+            "limit": None, "expiry_days": None,
+            "reason": "Trusted merchant, no intervention needed."}
 
-@app.get("/")
-def root():
-    return {"status": "ShieldPay API running", "docs": "/docs", "health": "/health"}
 
-# Endpoint: health 
-@app.get("/health")
-def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+def _extract_decision_json(full_text: str):
+    if "DECISION_JSON:" not in full_text:
+        return None
+    json_part = full_text.split("DECISION_JSON:")[-1].strip()
+    return _safe_json_parse(json_part, fallback=None)
 
-# Endpoint: analyze (streaming) 
+
 @app.post("/analyze")
 async def analyze(ctx: CheckoutContext):
-    """
-    Streams Claude's reasoning + decision back as Server-Sent Events.
-    Frontend listens to this stream and renders it in real time.
-    
-    SSE format:
-      data: <text chunk>         ← reasoning text, streamed word by word
-      data: [DECISION] {...}     ← final JSON decision object
-      data: [DONE]               ← stream complete
-    """
+    """Legacy text-based streaming analyze endpoint."""
     user_message = (
         f"Checkout context:\n"
         f"- Merchant: {ctx.merchant_name}\n"
         f"- Scenario: {ctx.scenario}\n"
-        f"- Amount: €{ctx.amount:.2f}\n"
+        f"- Amount: EUR {ctx.amount:.2f}\n"
         f"- Description: {ctx.description}\n\n"
         f"Analyse this and tell me how to protect this payment."
     )
@@ -175,164 +620,75 @@ async def analyze(ctx: CheckoutContext):
         full_text = ""
         try:
             with ai.messages.stream(
-                model="claude-sonnet-4-6",
+                model=MODEL,
                 max_tokens=600,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
                 for text in stream.text_stream:
                     full_text += text
-                    # Stream raw text chunks to frontend
-                    yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
+                    yield _sse({"type": "text", "content": text})
 
-            # After streaming, extract the JSON decision
-            decision = None
-            if "DECISION_JSON:" in full_text:
-                json_part = full_text.split("DECISION_JSON:")[-1].strip()
-                # Find the JSON object
-                start = json_part.find("{")
-                end = json_part.rfind("}") + 1
-                if start != -1 and end > start:
-                    try:
-                        decision = json.loads(json_part[start:end])
-                    except json.JSONDecodeError:
-                        pass
-
-            if decision:
-                yield f"data: {json.dumps({'type': 'decision', 'content': decision})}\n\n"
-            else:
-                # Fallback decision based on scenario if Claude didn't format correctly
-                fallback = _fallback_decision(ctx.scenario, ctx.amount)
-                yield f"data: {json.dumps({'type': 'decision', 'content': fallback})}\n\n"
-
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
+            decision = _extract_decision_json(full_text)
+            if not decision:
+                decision = _fallback_decision(ctx.scenario, ctx.amount)
+            yield _sse({"type": "decision", "content": decision})
+            yield _sse({"type": "done"})
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield _sse({"type": "error", "content": str(e)})
 
     return StreamingResponse(
         stream_claude(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable nginx buffering if deployed
-        }
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
-def _fallback_decision(scenario: str, amount: float) -> dict:
-    """Fallback if Claude's response doesn't parse cleanly."""
-    if scenario == "free_trial":
-        return {"risk": "high", "action": "create_card", "card_type": "trial_shield",
-                "limit": 0.01, "expiry_days": 29, "reason": "Free trial detected — shield card created."}
-    elif scenario == "unknown_merchant":
-        return {"risk": "medium", "action": "create_card", "card_type": "one_time",
-                "limit": amount, "expiry_days": None, "reason": "Unknown merchant — one-time card created."}
-    else:
-        return {"risk": "low", "action": "no_action", "card_type": None,
-                "limit": None, "expiry_days": None, "reason": "Trusted merchant — no intervention needed."}
 
-# Endpoint: create-card ─
+# Agentic image analysis - this is the primary endpoint the frontend uses.
+@app.post("/analyze-image-upload")
+async def analyze_image_upload(
+    file: UploadFile = File(...),
+    hint: str | None = Form(None),
+):
+    """Runs the agentic ShieldPay loop on an uploaded image."""
+    image_bytes = await file.read()
+    image_b64 = base64.b64encode(image_bytes).decode()
+    media_type = file.content_type or "image/jpeg"
+
+    return StreamingResponse(
+        run_shieldpay_agent(image_b64, media_type, hint),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/create-card")
 def create_card(req: CreateCardRequest):
-    """
-    Creates a bunq virtual card based on Claude's decision.
-    Returns card details to display in the frontend.
-    """
-    # Determine label based on scenario
-    labels = {
-        "free_trial":        "TRIAL SHIELD",
-        "unknown_merchant":  "ONE-TIME CARD",
-        "trusted_merchant":  "SHIELD CARD",
-    }
-    second_line = labels.get(req.scenario, "SHIELD CARD")
-
-    # Build card creation body
-    card_body = {
-        "second_line": second_line,
-        "name_on_card": CARD_NAME,
-        "type": "MASTERCARD",
-        "product_type": "MASTERCARD_DEBIT",
-        "pin_code_assignment": [
-            {
-                "type": "PRIMARY",
-                # "pin_code": os.getenv("CARD_PIN", "473829"),
-                "pin_code": os.getenv("CARD_PIN", "1234"),
-                "monetary_account_id": int(MONETARY_ACCOUNT_ID)
-            }
-        ]
-    }
-
-    body_str = json.dumps(card_body)
-    url = f"{BUNQ_API_URL}/user/{USER_ID}/card-debit"
-
-    resp = requests.post(url, headers=bunq_headers(body_str), data=body_str)
-
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail=f"bunq error: {resp.text}")
-
-    # Parse card ID from response
-    response_list = resp.json().get("Response", [])
-    card_id = None
-    card_data = {}
-    for item in response_list:
-        if "CardDebit" in item:
-            card_data = item["CardDebit"]
-            card_id = card_data.get("id")
-            break
-        if "Id" in item:
-            card_id = item["Id"]["id"]
-
-    if not card_id:
-        raise HTTPException(status_code=502, detail="Could not parse card ID from bunq response")
-
-    # Set spending limit
-    limit_body = json.dumps({
-        "card_limit": {"value": f"{req.limit:.2f}", "currency": "EUR"},
-        "status": "ACTIVE"
-    })
-    put_url = f"{BUNQ_API_URL}/user/{USER_ID}/card/{card_id}"
-    limit_resp = requests.put(put_url, headers=bunq_headers(limit_body), data=limit_body)
-
-    if limit_resp.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"bunq limit error: {limit_resp.text}"
-        )
-
-    # Calculate display expiry
-    if req.expiry_days:
-        display_expiry = (datetime.utcnow() + timedelta(days=req.expiry_days)).strftime("%Y-%m-%d")
-    else:
-        display_expiry = card_data.get("expiry_date", "2030-05-31")
-
+    """Direct card creation endpoint, kept for non-agent flows."""
+    result = _create_bunq_card(req.scenario, req.limit, req.expiry_days)
+    if not result.get("created"):
+        raise HTTPException(status_code=502,
+                            detail=result.get("error", "Card creation failed"))
     return {
-        "card_id": card_id,
-        "second_line": second_line,
-        "limit": req.limit,
-        "currency": "EUR",
-        "scenario": req.scenario,
-        "expiry_date": display_expiry,
-        "status": "ACTIVE",
-        "masked_number": f"**** **** **** {str(card_id)[-4:].zfill(4)}",
+        "card_id": result["card_id"],
+        "second_line": result["second_line"],
+        "limit": result["limit"],
+        "currency": result["currency"],
+        "scenario": result["scenario"],
+        "expiry_date": result["expiry_date"],
+        "status": result["status"],
+        "masked_number": result["masked_number"],
         "created_at": datetime.utcnow().isoformat(),
     }
 
-# Endpoint: cancel-card ─
+
 @app.post("/cancel-card")
 def cancel_card(req: CancelCardRequest):
-    """
-    Cancels a bunq card. Called immediately after the demo "payment".
-    """
-    cancel_body = json.dumps({
-        "status": "CANCELLED",
-        "cancellation_reason": "NONE",  
-    })
+    cancel_body = json.dumps({"status": "CANCELLED", "cancellation_reason": "NONE"})
     url = f"{BUNQ_API_URL}/user/{USER_ID}/card/{req.card_id}"
     resp = requests.put(url, headers=bunq_headers(cancel_body), data=cancel_body)
-
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"bunq cancel error: {resp.text}")
-
     return {
         "card_id": req.card_id,
         "status": "CANCELLED",
@@ -340,118 +696,32 @@ def cancel_card(req: CancelCardRequest):
     }
 
 
-@app.post("/analyze-image")
-async def analyze_image(ctx: CheckoutImageContext):
-    """
-    Same SSE contract as /analyze, but Claude extracts merchant + amount
-    from an uploaded bill/receipt image instead of receiving them as text.
-    """
-    user_content = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": ctx.media_type,
-                "data": ctx.image_base64,
-            },
-        },
-        {
-            "type": "text",
-            "text": (
-                f"Here is a bill or receipt. Extract the merchant and total amount, "
-                f"then analyse the payment risk.\n"
-                f"User hint: {ctx.hint or 'none'}"
-            ),
-        },
-    ]
-
-    def stream_claude():
-        full_text = ""
-        try:
-            with ai.messages.stream(
-                model="claude-sonnet-4-6",
-                max_tokens=800,
-                system=IMAGE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_content}],
-            ) as stream:
-                for text in stream.text_stream:
-                    full_text += text
-                    yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
-
-            decision = None
-            if "DECISION_JSON:" in full_text:
-                json_part = full_text.split("DECISION_JSON:")[-1].strip()
-                start = json_part.find("{")
-                end = json_part.rfind("}") + 1
-                if start != -1 and end > start:
-                    try:
-                        decision = json.loads(json_part[start:end])
-                    except json.JSONDecodeError:
-                        pass
-
-            if decision:
-                yield f"data: {json.dumps({'type': 'decision', 'content': decision})}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'error', 'content': 'Could not parse decision from image analysis.'})}\n\n"
-
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-
-    return StreamingResponse(
-        stream_claude(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
-    )
-
-@app.post("/analyze-image-upload")
-async def analyze_image_upload(
-    file: UploadFile = File(...),
-    hint: str | None = Form(None),
-):
-    """
-    Accepts a real image file upload (multipart/form-data).
-    Internally reuses /analyze-image logic.
-    """
-    image_bytes = await file.read()
-    image_b64 = base64.b64encode(image_bytes).decode()
-    media_type = file.content_type or "image/jpeg"
-
-    ctx = CheckoutImageContext(
-        image_base64=image_b64,
-        media_type=media_type,
-        hint=hint,
-    )
-    return await analyze_image(ctx)
-
 @app.get("/get-card/{card_id}")
 def get_card(card_id: int):
-    """
-    Fetches real card details from bunq.
-    Used by the frontend to display the card after creation.
-    Returns only safe-to-display fields (no PAN, no CVV - bunq does not expose these).
-    """
     url = f"{BUNQ_API_URL}/user/{USER_ID}/card/{card_id}"
     resp = requests.get(url, headers=bunq_headers())
-
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"bunq error: {resp.text}")
 
     card_data = _extract_card_data(resp.json())
     if not card_data:
-        raise HTTPException(status_code=502, detail="Could not parse card from bunq response")
-
+        raise HTTPException(status_code=502,
+                            detail="Could not parse card from bunq response")
     return _format_card_for_display(card_data)
 
 
-def _extract_card_data(bunq_response: dict) -> dict | None:
-    """Pulls the card object out of bunq's nested Response array."""
-    response_list = bunq_response.get("Response", [])
-    for item in response_list:
+@app.get("/default-card")
+def default_card():
+    """Returns the user's default virtual card. Creates one if missing.
+
+    Sets created_now=True on the response that performed the creation, so the
+    UI can surface a notice. Cached for the lifetime of the process.
+    """
+    return _get_or_create_default_card()
+
+
+def _extract_card_data(bunq_response: dict):
+    for item in bunq_response.get("Response", []):
         if "CardDebit" in item:
             return item["CardDebit"]
         if "Card" in item:
@@ -460,7 +730,6 @@ def _extract_card_data(bunq_response: dict) -> dict | None:
 
 
 def _format_card_for_display(card: dict) -> dict:
-    """Shapes bunq's card object into what the frontend needs."""
     limit = card.get("card_limit") or {}
     return {
         "card_id": card.get("id"),
@@ -474,23 +743,16 @@ def _format_card_for_display(card: dict) -> dict:
         "product_type": card.get("product_type"),
     }
 
+
 @app.get("/allowed-card-names")
 def allowed_card_names():
-    """
-    Returns the list of card names bunq allows for this user.
-    Useful for the frontend to show a dropdown if CARD_NAME is not set.
-    """
     url = f"{BUNQ_API_URL}/user/{USER_ID}/card-name"
     resp = requests.get(url, headers=bunq_headers())
-
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"bunq error: {resp.text}")
-
-    response_list = resp.json().get("Response", [])
-    for item in response_list:
+    for item in resp.json().get("Response", []):
         if "CardUserNameArray" in item:
             return {"allowed_names": item["CardUserNameArray"].get("possible_card_name_array", [])}
-
     return {"allowed_names": []}
 
 
