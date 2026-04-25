@@ -1,0 +1,6 @@
+anthropic==0.97.0
+cryptography==47.0.0
+fastapi==0.136.1
+pydantic==2.13.3
+python-dotenv==1.2.2
+Requests==2.33.1
