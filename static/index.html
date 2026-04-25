@@ -136,10 +136,6 @@
   .btn-secondary { background: #26262e; color: #e8e8ed; }
   .btn-secondary:hover { background: #30303a; }
 
-  /* hint buttons */
-  .hint-btn { width: auto; margin-top: 0; padding: 10px 14px; font-size: 14px; }
-  .hint-btn.active { background: #5b8cff; color: white; }
-
   .hidden { display: none; }
 
   .reason { color: #c8c8d0; font-size: 16px; margin-top: 14px; line-height: 1.55; }
@@ -195,14 +191,6 @@
       <div class="drop-zone-text">or click to upload (receipt, bill, subscription page)</div>
       <input type="file" id="file-input" accept="image/*">
     </div>
-    <div style="margin-top: 16px;">
-      <div style="font-size: 13px; color: #8a8a92; margin-bottom: 10px; letter-spacing: 0.5px;">CONTEXT (OPTIONAL)</div>
-      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        <button class="hint-btn btn-secondary" data-hint="" style="flex: 1; min-width: 100px;">Auto detect</button>
-        <button class="hint-btn btn-secondary" data-hint="This is a free trial signup that will auto-charge later" style="flex: 1; min-width: 100px;">Free trial</button>
-        <button class="hint-btn btn-secondary" data-hint="This is a checkout on an unfamiliar online merchant I have not used before" style="flex: 1; min-width: 100px;">Unknown merchant</button>
-      </div>
-    </div>
   </div>
 
   <!-- Analyze state -->
@@ -256,7 +244,6 @@
 <script>
 const API = "";
 
-let selectedHint = "";
 let currentCardId = null;
 
 // Agent state captured during the SSE stream.
@@ -308,7 +295,6 @@ async function handleFile(file) {
   showAnalyzeState();
   const formData = new FormData();
   formData.append("file", file);
-  if (selectedHint) formData.append("hint", selectedHint);
 
   try {
     const response = await fetch(API + "/analyze-image-upload", {
@@ -547,16 +533,6 @@ els.resetButton.addEventListener("click", () => {
   els.payButton.disabled = false;
   els.payButton.textContent = "Simulate payment & cancel card";
 });
-
-// Hint buttons
-document.querySelectorAll(".hint-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".hint-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    selectedHint = btn.dataset.hint;
-  });
-});
-document.querySelector(".hint-btn[data-hint='']").classList.add("active");
 </script>
 
 </body>
