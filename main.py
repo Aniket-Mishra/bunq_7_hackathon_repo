@@ -150,27 +150,29 @@ def _safe_json_parse(text: str, fallback):
         return fallback
 
 
-TRUSTED_MERCHANTS = {
-    "netflix", "spotify", "amazon", "apple", "google", "microsoft",
-    "uber", "bol.com", "albert heijn", "hema", "ikea", "zalando", "asos"
-}
-SUSPICIOUS_KEYWORDS = {
-    "gadgets4u", "deals4less", "freeshippingnow", "buynowcheap"
-}
-
-
 def tool_lookup_merchant_reputation(merchant_name: str) -> dict:
-    n = (merchant_name or "").lower()
-    for t in TRUSTED_MERCHANTS:
-        if t in n:
-            return {"merchant": merchant_name, "reputation": "trusted",
-                    "note": "Well known reputable merchant."}
-    for s in SUSPICIOUS_KEYWORDS:
-        if s in n:
-            return {"merchant": merchant_name, "reputation": "suspicious",
-                    "note": "Matches patterns associated with risky merchants."}
-    return {"merchant": merchant_name, "reputation": "unknown",
-            "note": "Not in our trusted or suspicious list. Treat with caution."}
+    """Uses Claude to assess merchant reputation dynamically — no hardcoded lists."""
+    if not merchant_name or merchant_name.lower() == "unknown":
+        return {"merchant": merchant_name, "reputation": "unknown",
+                "note": "No merchant name provided."}
+    resp = ai.messages.create(
+        model=MODEL,
+        max_tokens=150,
+        system=(
+            "You are a payment fraud expert. Given a merchant name, classify its reputation.\n"
+            "Reply ONLY with a JSON object, no prose:\n"
+            '{"reputation": "trusted"|"suspicious"|"unknown", "note": "<one sentence reason>"}\n\n'
+            "trusted = well-known global/regional brand (e.g. Netflix, Albert Heijn, Zalando)\n"
+            "suspicious = name contains scam signals (random words, 'deals', 'cheap', 'free', misspellings)\n"
+            "unknown = small/niche merchant with no clear red flags"
+        ),
+        messages=[{"role": "user", "content": f"Merchant: {merchant_name}"}],
+    )
+    result = _safe_json_parse(resp.content[0].text.strip(), fallback={
+        "reputation": "unknown", "note": "Could not assess reputation."
+    })
+    result["merchant"] = merchant_name
+    return result
 
 
 # Mock transaction history. In production this would hit bunq's payment API.
@@ -432,10 +434,12 @@ Workflow:
 2. Call lookup_merchant_reputation with the merchant name.
 3. If reputation is "unknown", call get_user_recent_transactions for extra signal.
 4. Decide a strategy. Pick exactly one:
-   A) TRUSTED merchant with a reasonable amount: skip card creation. Call notify_user with risk="low".
-   B) FREE TRIAL that will auto-charge later: create_shield_card with scenario="free_trial", limit=0.01, expiry_days=29. Then notify_user with risk="medium".
-   C) UNKNOWN but identifiable merchant (real name and amount visible): create_shield_card with scenario="unknown_merchant", limit equal to the exact purchase amount. Then notify_user with risk="medium".
+   A) TRUSTED one-off purchase: trusted merchant, reasonable amount, NOT a subscription or auto-renewing payment. Skip card creation. Call notify_user with risk="low".
+   B) FREE TRIAL that will auto-charge later (no money is taken today): create_shield_card with scenario="free_trial", limit=0.01, expiry_days=29. Then notify_user with risk="medium".
+   C) PAID SUBSCRIPTION or UNKNOWN merchant: a real amount is charged today AND either the merchant will auto-renew or auto-charge again later (e.g. Amazon Prime annual, Netflix paid plan, Spotify Premium, gym memberships) OR the merchant is unfamiliar but identifiable. create_shield_card with scenario="unknown_merchant", limit equal to the exact purchase amount. Then notify_user with risk="medium".
    D) FRAUDULENT or UNIDENTIFIABLE checkout (no merchant name visible, no amount visible, or merchant flagged as suspicious): DO NOT create a card. The user should not pay at all. Call notify_user with risk="high" and tell them not to proceed.
+
+If extract_checkout_details returns is_subscription_signup=true, the payment is recurring. Choose B or C, never A, even for trusted merchants like Amazon or Netflix. A subscription from a trusted brand is still a recurring liability the user should be able to control.
 
 A 1-cent shield card is not a substitute for refusing to pay. If the page itself looks fake, choose strategy D.
 
@@ -547,8 +551,7 @@ def run_shieldpay_agent(image_b64: str, media_type: str, hint):
 
 @app.get("/")
 def root():
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/app/")
+    return {"status": "ShieldPay API running", "docs": "/docs", "health": "/health"}
 
 
 @app.get("/health")
