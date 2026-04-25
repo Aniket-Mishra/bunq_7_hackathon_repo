@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShieldPay</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0a0a0f;
+    color: #e8e8ed;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .container { width: 100%; max-width: 560px; }
+  h1 { font-size: 32px; margin-bottom: 6px; letter-spacing: -0.5px; }
+  .subtitle { color: #8a8a92; margin-bottom: 32px; font-size: 15px; }
+
+  .card {
+    background: #15151c;
+    border: 1px solid #26262e;
+    border-radius: 16px;
+    padding: 28px;
+    margin-bottom: 16px;
+  }
+
+  /* Upload zone */
+  .drop-zone {
+    border: 2px dashed #2e2e38;
+    border-radius: 12px;
+    padding: 48px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: #5b8cff;
+    background: #1a1a24;
+  }
+  .drop-zone-text { color: #8a8a92; font-size: 14px; }
+  .drop-zone-strong { color: #e8e8ed; font-weight: 600; margin-bottom: 6px; }
+  input[type="file"] { display: none; }
+
+  /* Analysis stream */
+  .stream-box {
+    background: #0d0d12;
+    border: 1px solid #26262e;
+    border-radius: 12px;
+    padding: 20px;
+    min-height: 120px;
+    font-size: 15px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .pulse::after {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    background: #5b8cff;
+    margin-left: 4px;
+    animation: blink 1s infinite;
+    vertical-align: text-bottom;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Decision badge */
+  .decision-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .risk-high { background: #3a1414; color: #ff7b7b; }
+  .risk-medium { background: #3a2a14; color: #ffb878; }
+  .risk-low { background: #14331f; color: #6fde9b; }
+
+  /* Bunq card visual */
+  .bunq-card {
+    background: linear-gradient(135deg, #1c1c28 0%, #2d2d40 100%);
+    border-radius: 16px;
+    padding: 24px;
+    color: white;
+    aspect-ratio: 1.586;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .bunq-card.shield { background: linear-gradient(135deg, #1a3a5c 0%, #2d5a8a 100%); }
+  .bunq-card.trial { background: linear-gradient(135deg, #5c1a3a 0%, #8a2d5a 100%); }
+  .bunq-card.cancelled { background: linear-gradient(135deg, #2a2a32 0%, #404048 100%); opacity: 0.6; }
+  .card-label { font-size: 11px; letter-spacing: 2px; opacity: 0.7; }
+  .card-number {
+    font-family: "SF Mono", monospace;
+    font-size: 20px;
+    letter-spacing: 2px;
+    margin: 12px 0;
+  }
+  .card-bottom { display: flex; justify-content: space-between; font-size: 11px; }
+  .card-bottom strong { display: block; font-size: 14px; margin-top: 2px; letter-spacing: 0.5px; }
+
+  /* Buttons */
+  button {
+    padding: 12px 20px;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    width: 100%;
+    margin-top: 8px;
+  }
+  .btn-primary { background: #5b8cff; color: white; }
+  .btn-primary:hover { background: #4a7cee; }
+  .btn-primary:disabled { background: #2a2a32; color: #5a5a62; cursor: not-allowed; }
+  .btn-secondary { background: #26262e; color: #e8e8ed; }
+  .btn-secondary:hover { background: #30303a; }
+  
+  /* hint buttons */
+  .hint-btn { width: auto; margin-top: 0; padding: 8px 12px; font-size: 13px; }
+  .hint-btn.active { background: #5b8cff; color: white; }
+
+  .hidden { display: none; }
+
+  .meta-row { color: #8a8a92; font-size: 13px; margin-top: 8px; }
+  .reason { color: #c8c8d0; font-size: 14px; margin-top: 12px; line-height: 1.5; }
+  .error { color: #ff7b7b; padding: 12px; background: #3a1414; border-radius: 8px; margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>ShieldPay</h1>
+  <p class="subtitle">AI payment protection. Powered by Claude and bunq.</p>
+
+  <!-- Upload state, commented out part does not give how to treat for demo -->
+  <!-- <div id="upload-state" class="card">
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-zone-strong">Drop a checkout screenshot here</div>
+      <div class="drop-zone-text">or click to upload (receipt, bill, subscription page)</div>
+      <input type="file" id="file-input" accept="image/*">
+    </div>
+  </div> -->
+
+  <div id="upload-state" class="card">
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-zone-strong">Drop a checkout screenshot here</div>
+      <div class="drop-zone-text">or click to upload (receipt, bill, subscription page)</div>
+      <input type="file" id="file-input" accept="image/*">
+    </div>
+    <div style="margin-top: 16px;">
+      <div style="font-size: 12px; color: #8a8a92; margin-bottom: 8px; letter-spacing: 0.5px;">CONTEXT (OPTIONAL)</div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="hint-btn btn-secondary" data-hint="" style="flex: 1; min-width: 100px;">Auto detect</button>
+        <button class="hint-btn btn-secondary" data-hint="This is a free trial signup that will auto-charge later" style="flex: 1; min-width: 100px;">Free trial</button>
+        <button class="hint-btn btn-secondary" data-hint="This is a checkout on an unfamiliar online merchant I have not used before" style="flex: 1; min-width: 100px;">Unknown merchant</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Analyze state -->
+  <div id="analyze-state" class="card hidden">
+    <div class="card-label" style="color:#8a8a92; margin-bottom: 12px;">CLAUDE IS THINKING</div>
+    <div class="stream-box pulse" id="stream-output"></div>
+    <div class="decision-row hidden" id="decision-row"></div>
+  </div>
+
+  <!-- Result state -->
+  <div id="result-state" class="hidden">
+    <div class="bunq-card" id="result-card">
+      <div>
+        <div class="card-label" id="card-label">SHIELD CARD</div>
+        <div class="card-number" id="card-number">**** **** **** ****</div>
+      </div>
+      <div class="card-bottom">
+        <div>
+          CARDHOLDER
+          <strong id="card-holder">-</strong>
+        </div>
+        <div>
+          EXPIRES
+          <strong id="card-expiry">-</strong>
+        </div>
+        <div>
+          LIMIT
+          <strong id="card-limit">-</strong>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="reason" id="result-reason"></div>
+      <button class="btn-primary" id="pay-button">Simulate payment & cancel card</button>
+      <button class="btn-secondary" id="reset-button">Start over</button>
+    </div>
+  </div>
+
+  <div id="error-box" class="error hidden"></div>
+</div>
+
+<script>
+const API = "";  // same origin
+
+// Only for hint:
+let selectedHint = "";
+
+const els = {
+  uploadState: document.getElementById("upload-state"),
+  analyzeState: document.getElementById("analyze-state"),
+  resultState: document.getElementById("result-state"),
+  dropZone: document.getElementById("drop-zone"),
+  fileInput: document.getElementById("file-input"),
+  streamOutput: document.getElementById("stream-output"),
+  decisionRow: document.getElementById("decision-row"),
+  resultCard: document.getElementById("result-card"),
+  cardLabel: document.getElementById("card-label"),
+  cardNumber: document.getElementById("card-number"),
+  cardHolder: document.getElementById("card-holder"),
+  cardExpiry: document.getElementById("card-expiry"),
+  cardLimit: document.getElementById("card-limit"),
+  resultReason: document.getElementById("result-reason"),
+  payButton: document.getElementById("pay-button"),
+  resetButton: document.getElementById("reset-button"),
+  errorBox: document.getElementById("error-box"),
+};
+
+let currentDecision = null;
+let currentCardId = null;
+
+// ---- File handling ----
+els.dropZone.addEventListener("click", () => els.fileInput.click());
+els.fileInput.addEventListener("change", (e) => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+els.dropZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  els.dropZone.classList.add("dragover");
+});
+els.dropZone.addEventListener("dragleave", () => {
+  els.dropZone.classList.remove("dragover");
+});
+els.dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  els.dropZone.classList.remove("dragover");
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+// Without hint buttons
+// async function handleFile(file) {
+//  showAnalyzeState();
+//  const formData = new FormData();
+//  formData.append("file", file);
+
+//  try {
+//    const response = await fetch(API + "/analyze-image-upload", {
+//      method: "POST",
+//      body: formData,
+//    });
+//    await readSSEStream(response);
+//  } catch (err) {
+//    showError(err.message);
+//  }
+//}
+
+// This is for hint buttoins
+async function handleFile(file) {
+  showAnalyzeState();
+  const formData = new FormData();
+  formData.append("file", file);
+  if (selectedHint) formData.append("hint", selectedHint);
+
+  try {
+    const response = await fetch(API + "/analyze-image-upload", {
+      method: "POST",
+      body: formData,
+    });
+    await readSSEStream(response);
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+// ---- SSE stream reader ----
+async function readSSEStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let analysisText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n\n");
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const event = JSON.parse(line.slice(6));
+
+      /* old version, kept for reference
+      if (event.type === "text") {
+        analysisText += event.content;
+        els.streamOutput.textContent = analysisText;
+      */
+      if (event.type === "text") {
+        analysisText += event.content;
+        const visible = analysisText.split("DECISION_JSON:")[0].trim();
+        els.streamOutput.textContent = visible;
+      } else if (event.type === "decision") {
+        currentDecision = event.content;
+        renderDecision(currentDecision);
+      } else if (event.type === "error") {
+        showError(event.content);
+      } else if (event.type === "done") {
+        els.streamOutput.classList.remove("pulse");
+        await handleDecision(currentDecision);
+      }
+    }
+  }
+}
+
+// ---- Decision handling ----
+function renderDecision(decision) {
+  els.decisionRow.classList.remove("hidden");
+  els.decisionRow.innerHTML = `
+    <span class="badge risk-${decision.risk}">${decision.risk} risk</span>
+    <span style="color:#8a8a92; font-size: 14px;">${decision.action.replace("_", " ")}</span>
+  `;
+}
+
+async function handleDecision(decision) {
+  if (!decision) return;
+
+  if (decision.action === "no_action") {
+    showResult({
+      label: "MAIN CARD",
+      cardClass: "shield",
+      number: "**** **** **** 1553",
+      holder: "Kiley Hammond",
+      expiry: "12/29",
+      limit: "Default",
+      reason: decision.reason,
+      noCancel: true,
+    });
+    return;
+  }
+
+  // Need to create a card
+  try {
+    const scenario = decision.card_type === "trial_shield" ? "free_trial" : "unknown_merchant";
+    const createResp = await fetch(API + "/create-card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scenario: scenario,
+        amount: decision.limit || 0.01,
+        limit: decision.limit || 0.01,
+        expiry_days: decision.expiry_days,
+      }),
+    });
+    if (!createResp.ok) throw new Error("Create card failed: " + await createResp.text());
+    const created = await createResp.json();
+    currentCardId = created.card_id;
+
+    // Fetch real card details
+    const detailsResp = await fetch(API + "/get-card/" + created.card_id);
+    const details = await detailsResp.json();
+
+    showResult({
+      label: details.second_line || "SHIELD CARD",
+      cardClass: scenario === "free_trial" ? "trial" : "shield",
+      number: created.masked_number,
+      holder: details.name_on_card,
+      expiry: formatExpiry(details.expiry_date),
+      limit: "EUR " + details.limit_value,
+      reason: decision.reason,
+      noCancel: false,
+    });
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+function formatExpiry(dateStr) {
+  if (!dateStr) return "-";
+  const parts = dateStr.split("-");
+  return parts[1] + "/" + parts[0].slice(2);
+}
+
+// ---- UI state ----
+function showAnalyzeState() {
+  els.uploadState.classList.add("hidden");
+  els.resultState.classList.add("hidden");
+  els.errorBox.classList.add("hidden");
+  els.analyzeState.classList.remove("hidden");
+  els.streamOutput.textContent = "";
+  els.streamOutput.classList.add("pulse");
+  els.decisionRow.classList.add("hidden");
+  els.decisionRow.innerHTML = "";
+}
+
+function showResult({ label, cardClass, number, holder, expiry, limit, reason, noCancel }) {
+  els.resultCard.className = "bunq-card " + cardClass;
+  els.cardLabel.textContent = label;
+  els.cardNumber.textContent = number;
+  els.cardHolder.textContent = holder;
+  els.cardExpiry.textContent = expiry;
+  els.cardLimit.textContent = limit;
+  els.resultReason.textContent = reason;
+  els.payButton.classList.toggle("hidden", noCancel);
+  els.resultState.classList.remove("hidden");
+}
+
+function showError(msg) {
+  els.errorBox.textContent = "Error: " + msg;
+  els.errorBox.classList.remove("hidden");
+}
+
+// ---- Pay & cancel ----
+els.payButton.addEventListener("click", async () => {
+  if (!currentCardId) return;
+  els.payButton.disabled = true;
+  els.payButton.textContent = "Processing payment...";
+
+  await new Promise(r => setTimeout(r, 800));
+
+  try {
+    const resp = await fetch(API + "/cancel-card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ card_id: currentCardId }),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error("Cancel failed: " + errText);
+    }
+
+    els.resultCard.classList.add("cancelled");
+    els.cardLabel.textContent = "PAYMENT COMPLETE - CARD CANCELLED";
+    els.payButton.textContent = "Card cancelled. Your main card is safe.";
+  } catch (err) {
+    showError(err.message);
+    els.payButton.disabled = false;
+  }
+});
+
+els.resetButton.addEventListener("click", () => {
+  currentDecision = null;
+  currentCardId = null;
+  els.uploadState.classList.remove("hidden");
+  els.analyzeState.classList.add("hidden");
+  els.resultState.classList.add("hidden");
+  els.errorBox.classList.add("hidden");
+  els.fileInput.value = "";
+  els.payButton.disabled = false;
+  els.payButton.textContent = "Simulate payment & cancel card";
+});
+
+// Hint button handling
+document.querySelectorAll(".hint-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".hint-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    selectedHint = btn.dataset.hint;
+  });
+});
+// Default to "Auto detect"
+document.querySelector(".hint-btn[data-hint='']").classList.add("active");
+
+</script>
+
+</body>
+</html>
