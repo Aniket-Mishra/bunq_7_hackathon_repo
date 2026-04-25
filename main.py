@@ -390,8 +390,10 @@ AGENT_TOOLS = [
         "description": (
             "Create a virtual bunq card. "
             "Use scenario='free_trial' with limit=0.01 and expiry_days=29 for trials that auto-charge later. "
-            "Use scenario='unknown_merchant' with limit set to the exact purchase amount for risky merchants. "
-            "Do NOT call this for trusted merchants; skip straight to notify_user."
+            "Use scenario='unknown_merchant' with limit set to the exact purchase amount for unknown but identifiable merchants. "
+            "Do NOT call this for trusted merchants; skip straight to notify_user. "
+            "Do NOT call this when the checkout looks fraudulent or has no identifiable merchant or amount; "
+            "in that case skip straight to notify_user with risk='high'."
         ),
         "input_schema": {
             "type": "object",
@@ -429,13 +431,15 @@ Workflow:
 1. Call extract_checkout_details first.
 2. Call lookup_merchant_reputation with the merchant name.
 3. If reputation is "unknown", call get_user_recent_transactions for extra signal.
-4. Decide a strategy:
-   - Free trial signup that will auto-charge later: create_shield_card with scenario="free_trial", limit=0.01, expiry_days=29.
-   - Unknown or suspicious merchant: create_shield_card with scenario="unknown_merchant", limit equal to the exact purchase amount.
-   - Trusted merchant with reasonable amount: skip card creation entirely.
-5. ALWAYS finish by calling notify_user with a 1-2 sentence reason and a risk level (high, medium, low).
+4. Decide a strategy. Pick exactly one:
+   A) TRUSTED merchant with a reasonable amount: skip card creation. Call notify_user with risk="low".
+   B) FREE TRIAL that will auto-charge later: create_shield_card with scenario="free_trial", limit=0.01, expiry_days=29. Then notify_user with risk="medium".
+   C) UNKNOWN but identifiable merchant (real name and amount visible): create_shield_card with scenario="unknown_merchant", limit equal to the exact purchase amount. Then notify_user with risk="medium".
+   D) FRAUDULENT or UNIDENTIFIABLE checkout (no merchant name visible, no amount visible, or merchant flagged as suspicious): DO NOT create a card. The user should not pay at all. Call notify_user with risk="high" and tell them not to proceed.
 
-Speak briefly between tool calls so the user can follow your reasoning. Be decisive."""
+A 1-cent shield card is not a substitute for refusing to pay. If the page itself looks fake, choose strategy D.
+
+Be decisive. Do not narrate or explain between tool calls. The UI shows tool progress directly. Your only user-facing text is the message you pass to notify_user."""
 
 
 def _serialize_assistant(content) -> list:
@@ -543,7 +547,8 @@ def run_shieldpay_agent(image_b64: str, media_type: str, hint):
 
 @app.get("/")
 def root():
-    return {"status": "ShieldPay API running", "docs": "/docs", "health": "/health"}
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/app/")
 
 
 @app.get("/health")

@@ -16,23 +16,23 @@
     justify-content: center;
     padding: 20px;
   }
-  .container { width: 100%; max-width: 560px; }
-  h1 { font-size: 32px; margin-bottom: 6px; letter-spacing: -0.5px; }
-  .subtitle { color: #8a8a92; margin-bottom: 32px; font-size: 15px; }
+  .container { width: 100%; max-width: 620px; }
+  h1 { font-size: 36px; margin-bottom: 8px; letter-spacing: -0.5px; }
+  .subtitle { color: #8a8a92; margin-bottom: 36px; font-size: 17px; }
 
   .card {
     background: #15151c;
     border: 1px solid #26262e;
     border-radius: 16px;
-    padding: 28px;
-    margin-bottom: 16px;
+    padding: 32px;
+    margin-bottom: 18px;
   }
 
   /* Upload zone */
   .drop-zone {
     border: 2px dashed #2e2e38;
     border-radius: 12px;
-    padding: 48px 24px;
+    padding: 56px 28px;
     text-align: center;
     cursor: pointer;
     transition: all 0.2s;
@@ -41,45 +41,22 @@
     border-color: #5b8cff;
     background: #1a1a24;
   }
-  .drop-zone-text { color: #8a8a92; font-size: 14px; }
-  .drop-zone-strong { color: #e8e8ed; font-weight: 600; margin-bottom: 6px; }
+  .drop-zone-text { color: #8a8a92; font-size: 16px; }
+  .drop-zone-strong { color: #e8e8ed; font-weight: 600; font-size: 18px; margin-bottom: 8px; }
   input[type="file"] { display: none; }
 
-  /* Analysis stream */
-  .stream-box {
-    background: #0d0d12;
-    border: 1px solid #26262e;
-    border-radius: 12px;
-    padding: 20px;
-    min-height: 80px;
-    font-size: 15px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-  }
-  .pulse::after {
-    content: "";
-    display: inline-block;
-    width: 8px;
-    height: 16px;
-    background: #5b8cff;
-    margin-left: 4px;
-    animation: blink 1s infinite;
-    vertical-align: text-bottom;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
-
   /* Tool call panel */
-  .tool-panel { margin-top: 14px; }
+  .tool-panel { margin-top: 16px; }
   .tool-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
+    gap: 14px;
+    padding: 12px 16px;
     background: #0d0d12;
     border: 1px solid #26262e;
     border-radius: 8px;
-    margin-top: 8px;
-    font-size: 13px;
+    margin-top: 10px;
+    font-size: 15px;
   }
   .tool-row .tool-icon {
     width: 14px;
@@ -103,10 +80,10 @@
   .tool-name { color: #c8c8d0; font-weight: 500; flex: 1; }
   .tool-result {
     color: #8a8a92;
-    font-size: 12px;
+    font-size: 13px;
     font-family: "SF Mono", monospace;
     text-align: right;
-    max-width: 240px;
+    max-width: 280px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -117,7 +94,7 @@
   .bunq-card {
     background: linear-gradient(135deg, #1c1c28 0%, #2d2d40 100%);
     border-radius: 16px;
-    padding: 24px;
+    padding: 28px;
     color: white;
     aspect-ratio: 1.586;
     display: flex;
@@ -131,27 +108,27 @@
   .bunq-card.shield { background: linear-gradient(135deg, #1a3a5c 0%, #2d5a8a 100%); }
   .bunq-card.trial { background: linear-gradient(135deg, #5c1a3a 0%, #8a2d5a 100%); }
   .bunq-card.cancelled { background: linear-gradient(135deg, #2a2a32 0%, #404048 100%); opacity: 0.6; }
-  .card-label { font-size: 11px; letter-spacing: 2px; opacity: 0.7; }
+  .card-label { font-size: 12px; letter-spacing: 2px; opacity: 0.7; }
   .card-number {
     font-family: "SF Mono", monospace;
-    font-size: 20px;
+    font-size: 24px;
     letter-spacing: 2px;
-    margin: 12px 0;
+    margin: 14px 0;
   }
-  .card-bottom { display: flex; justify-content: space-between; font-size: 11px; }
-  .card-bottom strong { display: block; font-size: 14px; margin-top: 2px; letter-spacing: 0.5px; }
+  .card-bottom { display: flex; justify-content: space-between; font-size: 12px; }
+  .card-bottom strong { display: block; font-size: 16px; margin-top: 4px; letter-spacing: 0.5px; }
 
   /* Buttons */
   button {
-    padding: 12px 20px;
+    padding: 14px 22px;
     border: none;
     border-radius: 10px;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
     cursor: pointer;
     transition: all 0.15s;
     width: 100%;
-    margin-top: 8px;
+    margin-top: 10px;
   }
   .btn-primary { background: #5b8cff; color: white; }
   .btn-primary:hover { background: #4a7cee; }
@@ -160,23 +137,49 @@
   .btn-secondary:hover { background: #30303a; }
 
   /* hint buttons */
-  .hint-btn { width: auto; margin-top: 0; padding: 8px 12px; font-size: 13px; }
+  .hint-btn { width: auto; margin-top: 0; padding: 10px 14px; font-size: 14px; }
   .hint-btn.active { background: #5b8cff; color: white; }
 
   .hidden { display: none; }
 
-  .reason { color: #c8c8d0; font-size: 14px; margin-top: 12px; line-height: 1.5; }
+  .reason { color: #c8c8d0; font-size: 16px; margin-top: 14px; line-height: 1.55; }
+  .warning-panel {
+    background: linear-gradient(135deg, #4a1414 0%, #2a0e0e 100%);
+    border: 1px solid #6b2424;
+    border-radius: 16px;
+    padding: 32px 28px;
+    margin-bottom: 18px;
+  }
+  .warning-label {
+    color: #ff7b7b;
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .warning-headline {
+    color: #ffd6d6;
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin-bottom: 16px;
+  }
+  .warning-message {
+    color: #f0c0c0;
+    font-size: 16px;
+    line-height: 1.55;
+  }
   .default-card-notice {
     background: #1c2a1c;
     color: #b8e6b8;
     border: 1px solid #2c4a2c;
     border-radius: 8px;
-    padding: 10px 12px;
-    margin-top: 12px;
-    font-size: 13px;
-    line-height: 1.5;
+    padding: 12px 14px;
+    margin-top: 14px;
+    font-size: 15px;
+    line-height: 1.55;
   }
-  .error { color: #ff7b7b; padding: 12px; background: #3a1414; border-radius: 8px; margin-top: 12px; }
+  .error { color: #ff7b7b; padding: 14px; background: #3a1414; border-radius: 8px; margin-top: 14px; font-size: 15px; }
 </style>
 </head>
 <body>
@@ -193,7 +196,7 @@
       <input type="file" id="file-input" accept="image/*">
     </div>
     <div style="margin-top: 16px;">
-      <div style="font-size: 12px; color: #8a8a92; margin-bottom: 8px; letter-spacing: 0.5px;">CONTEXT (OPTIONAL)</div>
+      <div style="font-size: 13px; color: #8a8a92; margin-bottom: 10px; letter-spacing: 0.5px;">CONTEXT (OPTIONAL)</div>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
         <button class="hint-btn btn-secondary" data-hint="" style="flex: 1; min-width: 100px;">Auto detect</button>
         <button class="hint-btn btn-secondary" data-hint="This is a free trial signup that will auto-charge later" style="flex: 1; min-width: 100px;">Free trial</button>
@@ -204,8 +207,7 @@
 
   <!-- Analyze state -->
   <div id="analyze-state" class="card hidden">
-    <div class="card-label" style="color:#8a8a92; margin-bottom: 12px;">CLAUDE IS THINKING</div>
-    <div class="stream-box pulse" id="stream-output"></div>
+    <div class="card-label" style="color:#8a8a92; margin-bottom: 14px; font-size: 13px;">ANALYZING</div>
     <div class="tool-panel" id="tool-panel"></div>
   </div>
 
@@ -235,6 +237,11 @@
         </div>
       </div>
     </div>
+    <div id="warning-panel" class="warning-panel hidden">
+      <div class="warning-label">PAYMENT BLOCKED</div>
+      <div class="warning-headline">Do Not Pay</div>
+      <div class="warning-message" id="warning-message"></div>
+    </div>
     <div class="card">
       <div id="default-card-notice" class="default-card-notice hidden"></div>
       <div class="reason" id="result-reason"></div>
@@ -263,9 +270,10 @@ const els = {
   resultState: document.getElementById("result-state"),
   dropZone: document.getElementById("drop-zone"),
   fileInput: document.getElementById("file-input"),
-  streamOutput: document.getElementById("stream-output"),
   toolPanel: document.getElementById("tool-panel"),
   resultCard: document.getElementById("result-card"),
+  warningPanel: document.getElementById("warning-panel"),
+  warningMessage: document.getElementById("warning-message"),
   cardLabel: document.getElementById("card-label"),
   cardNumber: document.getElementById("card-number"),
   cardHolder: document.getElementById("card-holder"),
@@ -318,7 +326,6 @@ async function readSSEStream(response) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let analysisText = "";
 
   while (true) {
     const { done, value } = await reader.read();
@@ -332,10 +339,7 @@ async function readSSEStream(response) {
       if (!line.startsWith("data: ")) continue;
       const event = JSON.parse(line.slice(6));
 
-      if (event.type === "text") {
-        analysisText += event.content;
-        els.streamOutput.textContent = analysisText;
-      } else if (event.type === "tool_start") {
+      if (event.type === "tool_start") {
         addToolRow(event.id, event.name);
       } else if (event.type === "tool_result") {
         completeToolRow(event.id, event.name, event.result);
@@ -343,7 +347,6 @@ async function readSSEStream(response) {
       } else if (event.type === "error") {
         showError(event.content);
       } else if (event.type === "done") {
-        els.streamOutput.classList.remove("pulse");
         await finalize();
       }
     }
@@ -402,6 +405,11 @@ function captureAgentState(name, result) {
 
 // ---- Result rendering ----
 async function finalize() {
+  if (agentFinalRisk === "high") {
+    showWarning(agentFinalMessage || "This checkout looks unsafe.");
+    return;
+  }
+
   if (agentCardData) {
     currentCardId = agentCardData.card_id;
     showResult({
@@ -438,6 +446,15 @@ async function finalize() {
   }
 }
 
+function showWarning(message) {
+  els.resultCard.classList.add("hidden");
+  els.warningPanel.classList.remove("hidden");
+  els.warningMessage.textContent = message;
+  els.resultReason.textContent = "";
+  els.payButton.classList.add("hidden");
+  els.resultState.classList.remove("hidden");
+}
+
 async function fetchDefaultCard() {
   try {
     const resp = await fetch(API + "/default-card");
@@ -464,8 +481,6 @@ function showAnalyzeState() {
   els.resultState.classList.add("hidden");
   els.errorBox.classList.add("hidden");
   els.analyzeState.classList.remove("hidden");
-  els.streamOutput.textContent = "";
-  els.streamOutput.classList.add("pulse");
   els.toolPanel.innerHTML = "";
   els.defaultCardNotice.classList.add("hidden");
   els.defaultCardNotice.textContent = "";
@@ -476,6 +491,8 @@ function showAnalyzeState() {
 }
 
 function showResult({ label, cardClass, number, holder, expiry, limit, reason, noCancel }) {
+  els.resultCard.classList.remove("hidden");
+  els.warningPanel.classList.add("hidden");
   els.resultCard.className = "bunq-card " + cardClass;
   els.cardLabel.textContent = label;
   els.cardNumber.textContent = number;
